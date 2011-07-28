@@ -1,0 +1,165 @@
+/*デマングルする秀丸マクロ
+
+（動作）
+-編集中のテキストには変更を加えません。デマングルした結果を
+「新しいウインドウ、または、アウトプット枠」へ出力します。
+
+-選択範囲あり（一行）
+	選択範囲をデマングルして表示。
+
+-選択範囲あり（複数行）
+	選択の開始行から終了行までを一行単位でデマングルして表示します。
+
+-選択範囲無し
+	直近のマングルされた名前っぽい箇所をデマングルして表示。
+
+-矩形選択
+	「選択範囲あり（複数行）」と同じ動作
+
+
+ohtorii
+http://d.hatena.ne.jp/ohtorii/
+https://github.com/ohtorii
+*/
+
+////////////////////////////////////////////////////////////////////////////
+//				ユーザーカスタマイズ
+////////////////////////////////////////////////////////////////////////////
+$g_exe_abs_path 		= currentmacrodirectory + "\\" + "demangle.exe";
+$g_dll_dengaku_abs_path = hidemarudir + "\\" + "DengakuDLL.dll";
+
+////////////////////////////////////////////////////////////////////////////
+//				メイン処理
+////////////////////////////////////////////////////////////////////////////
+
+$g_mangle_names	= "";
+$old_searchbuffer = searchbuffer;
+#old_searchoption = searchoption;
+//動作環境を固定化する。
+//折りたたみを維持,部分編集を維持,範囲選択,最後に移動
+//マクロ終了時に元に戻る。
+setcompatiblemode 0x0003|0x000c|0x0200|0x2000;
+call LoadDengaku;
+if(result){
+	call Main;
+	if(#g_load_dengaku){
+		freedll;
+	}
+}
+setsearch $old_searchbuffer, #old_searchoption;
+endmacro;
+
+
+
+
+Main:
+	disabledraw;
+	##old_column=column;
+	##old_lineno=lineno;
+	if(rectselecting){
+		call DoRecselecting;
+	}else{
+		if(selecting) {
+			if(seltoplineno==selendlineno){
+				call DoSelectingSingle;
+			}else{
+				call DoSelectingMulti;
+			}
+		}else{
+			call DoNoSelecting;
+		}
+	}
+	call DoDemangle;
+	movetolineno 1+##old_column,##old_lineno;
+	return ;
+
+DoRecselecting:
+	##old_seltopcolumn=seltopcolumn;
+	##old_seltoplineno=seltoplineno;
+	##old_selendlineno=selendlineno;
+	while(##old_seltoplineno <= ##old_selendlineno){
+		movetolineno 1+##old_seltopcolumn,##old_seltoplineno;
+		call DoNoSelecting;
+		##old_seltoplineno=##old_seltoplineno+1;
+	}
+	return ;
+	
+DoSelectingMulti:
+	##old_seltoplineno=seltoplineno;
+	##old_selendlineno=selendlineno;
+	while(##old_seltoplineno <= ##old_selendlineno){
+		movetolineno 1,##old_seltoplineno;
+		selectline;
+		$$str = gettext2(seltopcolumn,seltoplineno,selendcolumn,selendlineno);
+		$$str = dllfuncstr("RTRIM",$$str);
+		$g_mangle_names=$g_mangle_names + " " + $$str;
+		##old_seltoplineno=##old_seltoplineno+1;
+	}
+	return ;
+
+DoSelectingSingle:
+	$$str = gettext2(seltopcolumn,seltoplineno,selendcolumn,selendlineno);
+	$$str = dllfuncstr("RTRIM",$$str);
+	$g_mangle_names=$g_mangle_names + " " + $$str;
+	return ;
+
+DoNoSelecting:
+	call DoNoSelecting_Move;
+	##old_lineno	= lineno;
+	searchdown2 "[\\c@?$]+", regular,nocasesense,nohilight;
+	if(result && selecting && (##old_lineno==lineno)){
+		$$str = gettext2(seltopcolumn,seltoplineno,selendcolumn,selendlineno);
+		$$str = dllfuncstr("RTRIM",$$str);
+		$g_mangle_names=$g_mangle_names + " " + $$str;
+	}
+	return ;
+
+/*カーソルをマングル化された（と思われる）名前の先頭へ移動する。*/
+DoNoSelecting_Move:
+	##old_column 	= column;
+	##u 			= unicode;
+	while((0x20<##u) && (##u<0x7f)){
+		left;
+		if(! result){
+			break;
+		}
+		##u = unicode;
+	}
+	/*カーソル位置調整
+	（前）
+		| name
+	（後）
+		 |name
+	*/
+	if(column < ##old_column){
+		right;
+	}
+	return ;
+
+DoDemangle:
+	if( strlen($g_mangle_names)){
+		$$cmd_exe 	= "\"" + $g_exe_abs_path + "\"";
+		$$cmd 		=  $$cmd_exe + " " + $g_mangle_names;
+		//message $$cmd;
+		runex $$cmd
+			, 0 			//sync	  0:async 1:sync
+			, 5, "" 		//stdin   0:none 1:auto 2:file 3:(reserve) 4:all 5:select
+			, 7, "" 		//stdout  0:none 1:auto 2:file 3:add file  4:new 5:insert 6:replace
+			, 1, "" 		//stderr  0:none 1:=out 2:file 3:add file  4:new 5:insert 6:replace
+			, 0, "" 		//folder  0:none 1:current 2:specify 3:(reserve) 4:exe's folder
+			, 2 			//show	  0:auto 1:show 2:hide
+			, 1 			//nodraw  0:draw 1:no draw
+			, 0 			//unicode 0:ansi 2:unicode
+			;
+	}
+	return ;
+
+
+LoadDengaku:
+	loaddll $g_dll_dengaku_abs_path;
+	if (!result) {
+		message "田楽DLLのロードに失敗しました\n" + "DengakuDLL.dllが秀丸のディレクトリに存在するか確認してください";
+		return false;
+	}
+	#g_load_dengaku = true;
+	return true;
