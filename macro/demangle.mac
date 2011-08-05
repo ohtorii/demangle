@@ -39,14 +39,15 @@ $old_searchbuffer = searchbuffer;
 //折りたたみを維持,部分編集を維持,範囲選択,最後に移動
 //マクロ終了時に元に戻る。
 setcompatiblemode 0x0003|0x000c|0x0200|0x2000;
+call ClearOutput;
 call LoadDengaku;
 if(result){
 	call Main;
-	if(#g_load_dengaku){
-		freedll;
-	}
+	freedll;
+	setsearch $old_searchbuffer, #old_searchoption;
+	//runexを非同期で呼ぶとマクロが終了するため最後に処理する。
+	call DoDemangle;
 }
-setsearch $old_searchbuffer, #old_searchoption;
 endmacro;
 
 
@@ -69,16 +70,29 @@ Main:
 			call DoNoSelecting;
 		}
 	}
-	call DoDemangle;
 	movetolineno 1+##old_column,##old_lineno;
 	return ;
 
 DoRecselecting:
+	##old_x=x;
+	##old_y=y;
 	##old_seltopcolumn=seltopcolumn;
 	##old_seltoplineno=seltoplineno;
 	##old_selendlineno=selendlineno;
+	escape;
 	while(##old_seltoplineno <= ##old_selendlineno){
-		movetolineno 1+##old_seltopcolumn,##old_seltoplineno;
+		
+		/* 
+		以下の時にうまくカーソル移動するために２回に分けて移動する。
+			\t\t|name_1
+			name|_1
+		
+		・| は矩形選択時のカーソル位置
+		・\t==8space
+		*/
+		movetolineno 1,##old_seltoplineno;
+		moveto ##old_x,y;
+		
 		call DoNoSelecting;
 		##old_seltoplineno=##old_seltoplineno+1;
 	}
@@ -104,35 +118,44 @@ DoSelectingSingle:
 	return ;
 
 DoNoSelecting:
-	call DoNoSelecting_Move;
-	##old_lineno	= lineno;
-	searchdown2 "[\\c@?$]+", regular,nocasesense,nohilight;
-	if(result && selecting && (##old_lineno==lineno)){
-		$$str = gettext2(seltopcolumn,seltoplineno,selendcolumn,selendlineno);
-		$$str = dllfuncstr("RTRIM",$$str);
-		$g_mangle_names=$g_mangle_names + " " + $$str;
+	if(linelen2){
+		call DoNoSelecting_Move;
+		##old_lineno	= lineno;
+		searchdown2 "[\\c@?$_]+", regular,nocasesense,nohilight;
+		if(result && selecting && (##old_lineno==lineno)){
+			$$str = gettext2(seltopcolumn,seltoplineno,selendcolumn,selendlineno);
+			$$str = dllfuncstr("RTRIM",$$str);
+			$g_mangle_names=$g_mangle_names + " " + $$str;
+		}
 	}
 	return ;
 
 /*カーソルをマングル化された（と思われる）名前の先頭へ移動する。*/
 DoNoSelecting_Move:
+	##old_lineno	= lineno;
 	##old_column 	= column;
 	##u 			= unicode;
-	while((0x20<##u) && (##u<0x7f)){
+	if((0x0d==##u)||(0x0a==##u)||(0==##u)||(-1==##u)){
+		//カーソルは行末なので左へ１列移動
+		left;
+		##old_column 	= column;
+		##u 			= unicode;
+	}
+	if(##old_lineno != lineno){
+		movetolineno ##old_column+1, ##old_lineno;
+		return ;
+	}
+	
+	while((0x20<##u) && (##u<0x7f) && (##old_lineno == lineno)){
 		left;
 		if(! result){
 			break;
 		}
 		##u = unicode;
 	}
-	/*カーソル位置調整
-	（前）
-		| name
-	（後）
-		 |name
-	*/
-	if(column < ##old_column){
-		right;
+	if(##old_lineno != lineno){
+		movetolineno 1, ##old_lineno;
+		return ;
 	}
 	return ;
 
@@ -154,6 +177,14 @@ DoDemangle:
 	}
 	return ;
 
+ClearOutput:
+	loaddll "HmOutputPane.dll";
+	//アウトプット枠を開く
+	#ret=dllfunc("Output",hidemaruhandle(0),"");
+	//アウトプット枠をクリア
+	#h=dllfunc("GetWindowHandle",hidemaruhandle(0));
+	#ret=sendmessage(#h,0x111/*WM_COMMAND*/,1009,0);
+	return ;
 
 LoadDengaku:
 	loaddll $g_dll_dengaku_abs_path;
@@ -161,5 +192,4 @@ LoadDengaku:
 		message "田楽DLLのロードに失敗しました\n" + "DengakuDLL.dllが秀丸のディレクトリに存在するか確認してください";
 		return false;
 	}
-	#g_load_dengaku = true;
 	return true;
